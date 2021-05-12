@@ -1,4 +1,4 @@
-import { NativeModules, Platform } from 'react-native'
+import { NativeEventEmitter, NativeModules, Platform } from "react-native";
 import processTheme from './utils/processTheme'
 import checkArgs from './utils/checkArgs'
 import checkInit from './utils/checkInit'
@@ -142,11 +142,14 @@ const { StripeModule } = NativeModules
 
 class Stripe {
   stripeInitialized = false
-
   constructor() {
     // Mix in the deprecated methods
     Object.assign(this, deprecatedMethodsForInstance(this))
   }
+
+  events = new NativeEventEmitter(StripeModule);
+
+
   /**
    * @param options: {StripeOptions}
    * @returns {Promise<void>}
@@ -157,6 +160,25 @@ class Stripe {
     this.stripeInitialized = true
 
     return StripeModule.init(options, errorCodes)
+  }
+
+  setSessionId = (sessionId) => {
+    StripeModule.setSessionId(sessionId);
+  }
+
+  initCustomerContext = () => {
+    StripeModule.initCustomerContext();
+  }
+
+  showPaymentOptionsModal = (options = {}) => {
+    StripeModule.showPaymentOptionsModal({
+      ...options,
+      theme: processTheme(options.theme),
+    });
+  }
+
+  getPaymentMethodId = () => {
+    return StripeModule.getPaymentMethodId()
   }
 
   setStripeAccount = (stripeAccount) => StripeModule.setStripeAccount(stripeAccount)
@@ -196,6 +218,9 @@ class Stripe {
       ios: () => this.canMakeApplePayPayments(options),
       android: () => this.canMakeAndroidPayPayments(),
     })()
+  showChoosePaymentModal = () => {
+    StripeModule.showChoosePaymentModal();
+  }
 
   potentiallyAvailableNativePayNetworks = () =>
     Platform.select({

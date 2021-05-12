@@ -13,6 +13,7 @@
 
 #import "TPSError.h"
 #import "TPSStripeManager+Constants.h"
+#import "MyAPIClient.h"
 
 // If you change these, make sure to also change:
 //  android/src/main/java/com/gettipsi/stripe/StripeModule.java
@@ -260,9 +261,15 @@ void initializeTPSPaymentNetworksWithConditionalMappings() {
     NSString *merchantId;
     NSDictionary *errorCodes;
     NSString *stripeAccount;
+    NSString *baseURL;
+    STPCustomerContext *customerContext;
+    STPPaymentContext *paymentContext;
+    MyAPIClient *apiClient;
 
     RCTPromiseResolveBlock promiseResolver;
     RCTPromiseRejectBlock promiseRejector;
+
+    RCTPromiseResolveBlock paymentMethodIdWasObtained;
 
     BOOL requestIsCompleted;
 
@@ -270,7 +277,25 @@ void initializeTPSPaymentNetworksWithConditionalMappings() {
     NSError *applePayStripeError;
 }
 @end
-@implementation StripeModule
+@implementation StripeModule {
+    bool hasListeners;
+}
+
+- (NSArray<NSString *> *)supportedEvents {
+    return @[@"paymentOptionWasChanged"];
+}
+
+-(void)startObserving {
+    hasListeners = YES;
+    // Set up any upstream listeners or background tasks as necessary
+}
+
+// Will be called when this module's last listener is removed, or on dealloc.
+-(void)stopObserving {
+    hasListeners = NO;
+    // Remove upstream listeners, stop unnecessary background tasks
+}
+
 
 - (instancetype)init {
     if ((self = [super init])) {
@@ -303,6 +328,19 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)options errorCodes:(NSDictionary *)errors
     merchantId = options[@"merchantId"];
     errorCodes = errors;
     [StripeAPI setDefaultPublishableKey:publishableKey];
+    apiClient = [MyAPIClient new];
+    apiClient.ttApiKey = options[@"ttApiKey"];
+    apiClient.ttApiVersion = options[@"ttApiVersion"];
+    [apiClient setDelegate:self];
+}
+
+RCT_EXPORT_METHOD(setSessionId:(NSString *)sessionId) {
+    apiClient.sessionId = sessionId;
+    [customerContext clearCache];
+}
+
+RCT_EXPORT_METHOD(initCustomerContext) {
+    customerContext = [[STPCustomerContext alloc] initWithKeyProvider:apiClient];
 }
 
 RCT_EXPORT_METHOD(setStripeAccount:(NSString *)_stripeAccount) {
@@ -769,6 +807,36 @@ RCT_EXPORT_METHOD(createSourceWithParams:(NSDictionary *)params
     }];
 }
 
+RCT_EXPORT_METHOD(showPaymentOptionsModal:(NSDictionary *)options) {
+    UIModalPresentationStyle formPresentation = [self formPresentation:options[@"presentation"]];
+
+    UINavigationController *navigationController = [[UINavigationController alloc] init];
+
+    paymentContext = [[STPPaymentContext alloc] initWithCustomerContext:customerContext];
+    paymentContext.delegate = self;
+    paymentContext.hostViewController = navigationController;
+
+    STPPaymentOptionsViewController *vc= [[STPPaymentOptionsViewController alloc] initWithPaymentContext:paymentContext];
+
+    [navigationController setViewControllers:@[vc]];
+
+    [navigationController setModalPresentationStyle:formPresentation];
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [RCTPresentedViewController() presentViewController:navigationController animated:YES completion:nil];
+    });
+
+}
+
+RCT_EXPORT_METHOD(getPaymentMethodId:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject) {
+    paymentMethodIdWasObtained = resolve;
+    if(paymentContext && [paymentContext selectedPaymentOption]) {
+        [paymentContext requestPayment];
+    }
+}
+
+
 RCT_EXPORT_METHOD(paymentRequestWithCardForm:(NSDictionary *)options
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject) {
@@ -1226,6 +1294,54 @@ RCT_EXPORT_METHOD(openApplePaySetup) {
         NSDictionary *error = [errorCodes valueForKey:kErrorKeyCancelled];
         [self rejectPromiseWithCode:error[kErrorKeyCode] message:error[kErrorKeyDescription]];
     }
+}
+
+#pragma mark STPPaymentOptionsViewControllerDelegate
+
+
+- (void)paymentOptionsViewController:(STPAddCardViewController *)paymentOptionsViewController
+    didSelect:(id<STPPaymentOption> _Nonnull)paymentOption{
+
+}
+
+- (void)paymentOptionsViewController:(STPAddCardViewController *)paymentOptionsViewController
+    didSelectPaymentOption:(id<STPPaymentOption> _Nonnull)paymentOption{
+
+}
+
+- (void)paymentContextDidChange:(STPPaymentContext *)lastPaymentContext {
+    if (lastPaymentContext.selectedPaymentOption) {
+        if (hasListeners) { // Only send events if anyone is listening
+            [self sendEventWithName:@"paymentOptionWasChanged" body:@{@"label" : lastPaymentContext.selectedPaymentOption.label, @"image": [self encodeToBase64String:lastPaymentContext.selectedPaymentOption.image]}];
+         }
+    }
+}
+
+- (NSString *)encodeToBase64String:(UIImage *)image {
+ return [UIImagePNGRepresentation(image) base64EncodedStringWithOptions:NSDataBase64Encoding64CharacterLineLength];
+}
+
+- (void)paymentContext:(STPPaymentContext *)paymentContext
+didCreatePaymentResult:(STPPaymentResult *)paymentResult
+            completion:(void (^)(enum STPPaymentStatus, NSError * _Nullable))completion {
+
+    NSLog(@"%@",paymentResult.paymentMethod);
+    paymentMethodIdWasObtained(paymentResult.paymentMethod.stripeId);
+}
+
+- (void)paymentContext:(STPPaymentContext *)paymentContext
+   didFinishWithStatus:(STPPaymentStatus)status
+                 error:(NSError *)error {
+
+}
+
+- (void)keyWasObtained:(BOOL) result {
+
+}
+
+- (void)paymentContext:(STPPaymentContext *)paymentContext didFailToLoadWithError:(NSError *)error {
+
+     // Show the error to your user, etc.
 }
 
 #pragma mark PKPaymentAuthorizationViewControllerDelegate
